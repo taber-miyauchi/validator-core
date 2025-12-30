@@ -1,0 +1,33 @@
+name: SCIP Index
+
+on:
+  workflow_dispatch:
+
+jobs:
+  scip-index:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install scip-typescript
+        run: npm install -g @sourcegraph/scip-typescript
+
+      - name: Generate SCIP index
+        run: scip-typescript index
+
+      - name: Upload SCIP index to Sourcegraph
+        run: |
+          curl -L https://sourcegraph.com/.api/src-cli/src_linux_amd64 -o /usr/local/bin/src
+          chmod +x /usr/local/bin/src
+          src code-intel upload -github-token=${{ secrets.GITHUB_TOKEN }}
+        env:
+          SRC_ENDPOINT: ${{ secrets.SRC_ENDPOINT }}
+          SRC_ACCESS_TOKEN: ${{ secrets.SRC_ACCESS_TOKEN }}

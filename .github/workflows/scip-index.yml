@@ -20,8 +20,11 @@ jobs:
       - name: Install scip-typescript
         run: npm install -g @sourcegraph/scip-typescript
 
+      - name: Build TypeScript
+        run: npm run build
+
       - name: Generate SCIP index
-        run: scip-typescript index
+        run: scip-typescript index tsconfig.scip.json
 
       - name: Upload SCIP index to Sourcegraph
         run: |

@@ -39,9 +39,9 @@ When indexing `validator-service`, scip-typescript saw types from `node_modules`
 
 The file paths differ (`src/` vs `dist/`), so Sourcegraph couldn't match the symbols, and cross-repo navigation fell back to search-based.
 
-## The Solution: Declaration Maps
+## Attempted Solution: Declaration Maps (Did NOT Work)
 
-Adding `declarationMap: true` to `tsconfig.json` generates `.d.ts.map` files that tell TypeScript (and scip-typescript) the original source location of each declaration.
+We tried adding `declarationMap: true` to `tsconfig.json`, which generates `.d.ts.map` files that tell TypeScript the original source location of each declaration.
 
 ```json
 {
@@ -52,14 +52,39 @@ Adding `declarationMap: true` to `tsconfig.json` generates `.d.ts.map` files tha
 }
 ```
 
-With declaration maps, scip-typescript can trace:
-```
-dist/types.d.ts → src/types.ts
+**Result:** scip-typescript does NOT follow declaration maps when indexing external npm packages. It still generates symbols pointing to `dist/*.d.ts`, not `src/*.ts`.
+
+Verified by running `scip print index.scip`:
+- validator-core defines: `src/types.ts/ValidationResult#`
+- validator-schemas references: `dist/types.d.ts/ValidationResult#`
+
+The symbols don't match, so cross-repo navigation falls back to search-based.
+
+## Alternative Approach: tsconfig.scip.json
+
+Instead of trying to map dist→src, make the library index its `dist/` files so symbols match:
+
+**tsconfig.scip.json** (in library repos):
+```json
+{
+  "compilerOptions": {
+    "allowJs": false,
+    "declaration": false,
+    "noEmit": true,
+    "moduleResolution": "node",
+    "target": "ES2020",
+    "module": "commonjs",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true
+  },
+  "include": ["dist/**/*.d.ts"]
+}
 ```
 
-And generate matching symbol identifiers:
+This makes both repos generate matching symbols:
 ```
-src/types.ts/ValidationResult#  (both repos)
+dist/types.d.ts/ValidationResult#  (both repos)
 ```
 
 ## Role of npm Packages

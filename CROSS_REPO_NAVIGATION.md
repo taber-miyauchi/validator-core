@@ -1,6 +1,6 @@
 # Cross-Repository Precise Code Navigation for TypeScript
 
-This document summarizes findings from setting up Sourcegraph Precise Code Navigation across multiple TypeScript npm packages.
+This document summarizes findings from attempting to set up Sourcegraph Precise Code Navigation across multiple TypeScript npm packages.
 
 ## Architecture
 
@@ -12,36 +12,31 @@ validator-schemas       ← Implementations (EmailValidator, PhoneValidator, URL
 validator-service       ← Consumer (Express API using validators)
 ```
 
-## How SCIP Symbol Identifiers Work
+## The Core Problem
 
-When `scip-typescript` indexes a TypeScript project, it generates symbol identifiers in this format:
+When `scip-typescript` indexes a TypeScript project, it generates symbol identifiers like:
 
 ```
 scip-typescript npm <package-name> <version> <file-path>/<symbol>
 ```
 
-Example:
-```
-scip-typescript npm @taber-miyauchi/validator-core 0.2.0 src/`types.ts`/ValidationResult#
-```
+For cross-repo navigation to work, **the symbol identifiers must match exactly** between the repo that defines a symbol and the repo that references it.
 
-For cross-repo navigation to work, **the symbol identifiers must match exactly** between:
-- The repo that **defines** the symbol
-- The repo that **references** the symbol
+### Symbol Mismatch Issue
 
-## The Problem We Encountered
-
-When indexing `validator-service`, scip-typescript saw types from `node_modules`:
-
-| Source (validator-core) | Consumer (validator-service) |
+| Source (validator-core) | Consumer (validator-schemas) |
 |-------------------------|------------------------------|
 | `src/types.ts/ValidationResult#` | `dist/types.d.ts/ValidationResult#` |
 
-The file paths differ (`src/` vs `dist/`), so Sourcegraph couldn't match the symbols, and cross-repo navigation fell back to search-based.
+The file paths differ (`src/` vs `dist/`), so Sourcegraph can't match the symbols, and cross-repo navigation falls back to search-based.
 
-## Attempted Solution: Declaration Maps (Did NOT Work)
+---
 
-We tried adding `declarationMap: true` to `tsconfig.json`, which generates `.d.ts.map` files that tell TypeScript the original source location of each declaration.
+## Approaches Tried
+
+### Approach 1: Declaration Maps (Did NOT Work)
+
+Added `declarationMap: true` to generate `.d.ts.map` files that map compiled declarations back to source.
 
 ```json
 {
@@ -52,97 +47,100 @@ We tried adding `declarationMap: true` to `tsconfig.json`, which generates `.d.t
 }
 ```
 
-**Result:** scip-typescript does NOT follow declaration maps when indexing external npm packages. It still generates symbols pointing to `dist/*.d.ts`, not `src/*.ts`.
+**Result:** scip-typescript does NOT follow declaration maps when indexing external npm packages. Verified with `scip print index.scip` — consumers still reference `dist/*.d.ts` paths.
 
-Verified by running `scip print index.scip`:
-- validator-core defines: `src/types.ts/ValidationResult#`
-- validator-schemas references: `dist/types.d.ts/ValidationResult#`
+---
 
-The symbols don't match, so cross-repo navigation falls back to search-based.
+### Approach 2: tsconfig.scip.json (Did NOT Work)
 
-## Alternative Approach: tsconfig.scip.json
+Created a separate tsconfig for SCIP indexing that includes only `dist/**/*.d.ts`:
 
-Instead of trying to map dist→src, make the library index its `dist/` files so symbols match:
-
-**tsconfig.scip.json** (in library repos):
 ```json
 {
   "compilerOptions": {
-    "allowJs": false,
-    "declaration": false,
     "noEmit": true,
-    "moduleResolution": "node",
-    "target": "ES2020",
-    "module": "commonjs",
-    "strict": true,
-    "skipLibCheck": true,
-    "esModuleInterop": true
+    "moduleResolution": "node"
   },
   "include": ["dist/**/*.d.ts"]
 }
 ```
 
-This makes both repos generate matching symbols:
-```
-dist/types.d.ts/ValidationResult#  (both repos)
-```
+**Theory:** Make library repos index their `dist/` files so both definition and reference use `dist/` paths.
 
-## Role of npm Packages
+**Result:** Did not produce working cross-repo navigation.
 
-The npm packages are **not indexed in Sourcegraph**. Only the GitHub repositories are indexed.
+---
 
-npm packages serve as:
+### Approach 3: file: References with Sibling Checkout (Did NOT Work)
 
-1. **Symbol namespace** — The package name (`@taber-miyauchi/validator-core`) becomes part of every symbol identifier
-2. **Distribution mechanism** — Delivers `.d.ts` and `.d.ts.map` files to consuming repos
-3. **Version coordination** — Ensures all repos reference the same version for matching symbols
+Changed package.json to use `file:` references instead of npm versions:
 
-## Required Configuration
-
-### tsconfig.json (all repos)
 ```json
 {
-  "compilerOptions": {
-    "declaration": true,
-    "declarationMap": true
+  "dependencies": {
+    "@taber-miyauchi/validator-core": "file:../validator-core"
   }
 }
 ```
 
-### package.json (library repos)
-Include both `dist` and optionally `src` in files:
-```json
-{
-  "files": ["dist"]
-}
+Updated SCIP workflow to checkout sibling repos:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    path: validator-schemas
+
+- uses: actions/checkout@v4
+  with:
+    repository: taber-miyauchi/validator-core
+    path: validator-core
 ```
 
-Note: The `src` folder doesn't need to be published since declaration maps reference source files by path, not by actual file content. The important thing is that the `.d.ts.map` files are included in `dist/`.
+**Theory:** With repos as siblings, scip-typescript can resolve directly to source files, generating matching `src/` paths for both definition and reference.
 
-## Publishing & Indexing Order
+**Result:** Did not produce working cross-repo navigation.
 
-Must follow dependency order:
+---
 
-1. **Publish to npm**: core → schemas → service
-2. **Push to GitHub and tag**: all repos with matching version (e.g., v0.2.0)
-3. **Trigger SCIP indexing**: core → schemas → service (on tags, not main)
+## Working Reference: acme-shop Repos
 
-## Verifying It Works
+The following repos have working cross-repo navigation:
+- `github.com/tm-acme-shop/acme-shop-shared-ts`
+- `github.com/tm-acme-shop/acme-shop-frontend-web`
 
-After SCIP indexing completes, test in Sourcegraph:
+Key differences observed:
+- Uses GitHub Package Registry (not npmjs.com)
+- Uses `file:` references
+- Has `tsconfig.scip.json` indexing `dist/**/*.d.ts`
+- Has `declarationMap: true`
+- Main/types point to source: `"main": "src/index.ts"`
 
-### From validator-service
-- Click `Validator<string>` → should show "Precise" and jump to validator-core
-- Click `EmailValidator` → should show "Precise" and jump to validator-schemas
+Unclear which combination of these factors enables cross-repo navigation.
 
-### From validator-core
-- Click "Find Implementations" on `Validator<T>` → should list implementations in validator-schemas
-- Click "Find References" on `ValidationResult` → should show usages in all three repos
+---
 
-## Key Lessons
+## Next Steps to Try
 
-1. **Symbol identifiers include file paths** — Source and consumer must generate the same path
-2. **Declaration maps bridge the gap** — They let scip-typescript trace `.d.ts` back to `.ts`
-3. **npm packages provide identity, not indexing** — The package name is the namespace for symbols
-4. **Version alignment is critical** — Tagged commits must match the npm version that dependents reference
-5. **Index in dependency order** — Base libraries first, consumers last
+1. **Point main/types to source instead of dist**
+   ```json
+   {
+     "main": "src/index.ts",
+     "types": "src/index.ts"
+   }
+   ```
+
+2. **Use GitHub Package Registry** instead of npmjs.com (matches working repos)
+
+3. **Combine all acme-shop patterns**: file: refs + tsconfig.scip.json + declarationMap + src-pointing main/types
+
+4. **Check Sourcegraph configuration** for npm package host mappings
+
+5. **File an issue with scip-typescript** about cross-repo npm package navigation
+
+---
+
+## Current Status
+
+❌ Cross-repo precise navigation NOT working  
+✅ Same-repo precise navigation works  
+✅ Search-based cross-repo navigation works (fallback)

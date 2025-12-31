@@ -47,7 +47,7 @@ Added `declarationMap: true` to generate `.d.ts.map` files that map compiled dec
 }
 ```
 
-**Result:** scip-typescript does NOT follow declaration maps when indexing external npm packages. Verified with `scip print index.scip` — consumers still reference `dist/*.d.ts` paths.
+**Result:** When scip-typescript indexes a consumer repo, it resolves imports to the `.d.ts` files in `node_modules/` and does NOT follow declaration maps to trace back to original source paths. The generated symbol references point to `dist/*.d.ts` paths, which don't match the `src/*.ts` paths in the library's own SCIP index. (Note: Sourcegraph removed support for indexing npmjs.com packages directly, so cross-repo linking depends entirely on matching symbol paths between separately-indexed repos.)
 
 ---
 
@@ -99,23 +99,6 @@ Updated SCIP workflow to checkout sibling repos:
 **Theory:** With repos as siblings, scip-typescript can resolve directly to source files, generating matching `src/` paths for both definition and reference.
 
 **Result:** Did not produce working cross-repo navigation.
-
----
-
-## Working Reference: acme-shop Repos
-
-The following repos have working cross-repo navigation:
-- `github.com/tm-acme-shop/acme-shop-shared-ts`
-- `github.com/tm-acme-shop/acme-shop-frontend-web`
-
-Key differences observed:
-- Uses GitHub Package Registry (not npmjs.com)
-- Uses `file:` references
-- Has `tsconfig.scip.json` indexing `dist/**/*.d.ts`
-- Has `declarationMap: true`
-- Main/types point to source: `"main": "src/index.ts"`
-
-Unclear which combination of these factors enables cross-repo navigation.
 
 ---
 
@@ -231,11 +214,17 @@ To reproduce this setup:
    }
    ```
 
-2. Publish to npm in dependency order
+2. Make dependencies resolvable:
+   - **We used:** Publish to npm with source files included (`"files": ["src", "dist"]`), then reference by version
+   - **Alternative (untested with this fix):** Use `file:../sibling-repo` references and checkout repos as siblings in CI. This was tried earlier (Approach 3) but without the source-pointing fix, so it may work if combined with step 1.
 
-3. Trigger SCIP indexing on tagged commits in dependency order:
+   > **Note:** Publishing to npm is NOT required for cross-repo navigation. What matters is that when scip-typescript runs, it can resolve imports to source files (not `.d.ts` files).
+
+3. Verify repos are synced and up to date in Sourcegraph before triggering indexing.
+
+4. Trigger SCIP indexing on tagged commits in dependency order:
    - validator-core first
    - validator-schemas second  
    - validator-service last
 
-4. Verify in Sourcegraph that "Go to Definition" jumps across repos
+5. Verify in Sourcegraph that "Go to Definition" jumps across repos

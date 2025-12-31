@@ -119,28 +119,123 @@ Unclear which combination of these factors enables cross-repo navigation.
 
 ---
 
-## Next Steps to Try
+### Approach 4: Point main/types to Source (WORKED ✅)
 
-1. **Point main/types to source instead of dist**
-   ```json
-   {
-     "main": "src/index.ts",
-     "types": "src/index.ts"
-   }
-   ```
+Changed package.json to point `main` and `types` to source files instead of compiled output:
 
-2. **Use GitHub Package Registry** instead of npmjs.com (matches working repos)
+```json
+{
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "files": ["src", "dist"]
+}
+```
 
-3. **Combine all acme-shop patterns**: file: refs + tsconfig.scip.json + declarationMap + src-pointing main/types
+**Theory:** When scip-typescript resolves dependencies, it follows the `main`/`types` fields. By pointing these to source files, both the defining repo and consuming repo generate identical symbol paths like `src/types.ts/ValidationResult#`.
 
-4. **Check Sourcegraph configuration** for npm package host mappings
+**Result:** ✅ Cross-repo precise navigation works! "Go to Definition" and "Find References" now function correctly across all three repos.
 
-5. **File an issue with scip-typescript** about cross-repo npm package navigation
+---
+
+## Why This Fix Works
+
+The root cause is **symbol path mismatch** in SCIP indexes.
+
+When `main`/`types` pointed to **dist** (compiled):
+```
+validator-core index:     src/types.ts/ValidationResult#
+validator-schemas index:  node_modules/.../dist/types.d.ts/ValidationResult#
+```
+→ Paths don't match, Sourcegraph can't link them.
+
+When `main`/`types` pointed to **src** (source):
+```
+validator-core index:     src/types.ts/ValidationResult#
+validator-schemas index:  node_modules/.../src/types.ts/ValidationResult#
+```
+→ Paths match, cross-repo navigation works.
+
+---
+
+## ⚠️ Important: This is a Workaround, Not Best Practice
+
+Shipping source files via `main`/`types` is **non-standard** and has drawbacks:
+
+| Issue | Impact |
+|-------|--------|
+| Package size bloat | Source + compiled files both shipped |
+| TypeScript version coupling | Consumers may need compatible TS versions |
+| Node.js compatibility | Node can't run `.ts` directly without ts-node |
+| Source exposure | Some organizations prefer not to ship source |
+
+### Standard Production Approach
+
+Most npm packages use:
+```json
+{
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist"]
+}
+```
+
+### Proper Solutions (Not Yet Fully Supported)
+
+1. **Monorepo with local file: references** — Works because scip-typescript sees actual source during indexing, but requires all repos in same workspace
+
+2. **Sourcegraph package host configuration** — Map npm packages to GitHub repos at the Sourcegraph level (requires admin configuration)
+
+3. **Declaration map support in scip-typescript** — TypeScript's `declarationMap: true` creates `.d.ts.map` files that could theoretically link declarations back to source, but scip-typescript doesn't currently follow these maps
+
+### Recommended Tooling Improvements
+
+The underlying issue is that **scip-typescript generates different symbol identifiers for `.d.ts` files vs `.ts` source files**, even when they represent the same logical types. Potential fixes:
+
+1. **scip-typescript enhancement**: Follow declaration maps (`.d.ts.map`) to resolve symbols back to their original source paths
+
+2. **Sourcegraph symbol resolution**: Normalize symbols so `dist/types.d.ts/ValidationResult` and `src/types.ts/ValidationResult` are treated as equivalent
+
+3. **npm package host intelligence**: Automatically map npm package symbols to their source repository counterparts using `repository` field in package.json
 
 ---
 
 ## Current Status
 
-❌ Cross-repo precise navigation NOT working  
+✅ Cross-repo precise navigation WORKING (with source-pointing workaround)  
 ✅ Same-repo precise navigation works  
 ✅ Search-based cross-repo navigation works (fallback)
+
+---
+
+## Summary of Approaches
+
+| Approach | Result | Notes |
+|----------|--------|-------|
+| Declaration maps (`declarationMap: true`) | ❌ | scip-typescript doesn't follow .d.ts.map files |
+| tsconfig.scip.json for dist | ❌ | Did not produce matching symbols |
+| file: references with sibling checkout | ❌ | Complex setup, didn't work |
+| **Point main/types to source** | ✅ | Works but non-standard |
+
+---
+
+## Reproduction
+
+To reproduce this setup:
+
+1. Configure all packages with source-pointing entries:
+   ```json
+   {
+     "main": "src/index.ts",
+     "types": "src/index.ts",
+     "files": ["src", "dist"]
+   }
+   ```
+
+2. Publish to npm in dependency order
+
+3. Trigger SCIP indexing on tagged commits in dependency order:
+   - validator-core first
+   - validator-schemas second  
+   - validator-service last
+
+4. Verify in Sourcegraph that "Go to Definition" jumps across repos
